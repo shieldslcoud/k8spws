@@ -1,0 +1,72 @@
+version: 0.2
+
+# Deploys the BeyondTrust secrets-agent demo to EKS.
+# Manifests only - no image build, so no ECR and no privileged mode needed.
+#
+# Prerequisite (one time, out of band):
+#   kubectl -n default create secret generic pws-api \
+#     --from-literal=api-key='<KEY>;runas=<ACCOUNT>;'
+
+env:
+  variables:
+    AWS_REGION: us-east-1
+    CLUSTER_NAME: lab-cluster
+    K8S_NAMESPACE: default
+    DEPLOYMENT_NAME: passwordsafe-integrationv3
+    KUBECTL_VERSION: v1.31.0
+
+phases:
+  install:
+    commands:
+      - curl -sSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+      - chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
+      - kubectl version --client
+
+  pre_build:
+    commands:
+      - aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+      - kubectl cluster-info
+
+      # Fail fast with an actionable message rather than a 5 minute rollout timeout.
+      - |
+        if ! kubectl -n "$K8S_NAMESPACE" get secret pws-api >/dev/null 2>&1; then
+          echo "ERROR: secret/pws-api not found in namespace $K8S_NAMESPACE."
+          echo "Create it once with:"
+          echo "  kubectl -n $K8S_NAMESPACE create secret generic pws-api \\"
+          echo "    --from-literal=api-key='<KEY>;runas=<ACCOUNT>;'"
+          exit 1
+        fi
+
+  build:
+    commands:
+      # ConfigMap first - the Deployment mounts it as a volume.
+      - kubectl -n "$K8S_NAMESPACE" apply -f cmV3.yaml
+      - kubectl -n "$K8S_NAMESPACE" apply -f Deploy_V3.yaml
+
+      # A ConfigMap edit alone never restarts pods. This is what the
+      # demo/assets-revision annotation was working around by hand.
+      - kubectl -n "$K8S_NAMESPACE" rollout restart deployment/"$DEPLOYMENT_NAME"
+
+      # Readiness probe hits /k8s/k8s/k8s.txt, so this only goes green once the
+      # secrets-agent actually retrieved the secret from Password Safe.
+      - |
+        if ! kubectl -n "$K8S_NAMESPACE" rollout status \
+             deployment/"$DEPLOYMENT_NAME" --timeout=5m; then
+          echo "===== rollout failed - diagnostics ====="
+          kubectl -n "$K8S_NAMESPACE" get pods -l app="$DEPLOYMENT_NAME" -o wide
+          echo "----- secrets-agent (init container) logs -----"
+          kubectl -n "$K8S_NAMESPACE" logs -l app="$DEPLOYMENT_NAME" \
+            -c secrets-agent --tail=60 --ignore-errors || true
+          echo "----- nginx logs -----"
+          kubectl -n "$K8S_NAMESPACE" logs -l app="$DEPLOYMENT_NAME" \
+            -c web --tail=40 --ignore-errors || true
+          echo "----- events -----"
+          kubectl -n "$K8S_NAMESPACE" describe pods -l app="$DEPLOYMENT_NAME" \
+            | sed -n '/Events:/,$p'
+          exit 1
+        fi
+
+  post_build:
+    commands:
+      - kubectl -n "$K8S_NAMESPACE" get deploy,svc,pods -l app="$DEPLOYMENT_NAME"
+      - echo "View it with: kubectl -n $K8S_NAMESPACE port-forward svc/$DEPLOYMENT_NAME 8080:80"
