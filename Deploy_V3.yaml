@@ -1,9 +1,4 @@
----
-# The Password Safe API key must NOT live in the Deployment. Create it once:
-#
-#   kubectl create secret generic pws-api \
-#     --from-literal=api-key='<NEW-KEY>;runas=NH-k8Example-local;'
-#
+
 apiVersion: v1
 kind: Service
 metadata:
