@@ -2,33 +2,38 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: cmv3
-  namespace: default
+  # No hardcoded namespace - the pipeline passes -n explicitly. A namespace
+  # here that disagrees with the -n flag makes kubectl reject the apply.
 data:
   start.sh: |
     #!/bin/sh
     # Publishes the demo page + the secret the BeyondTrust secrets-agent wrote,
     # then hands PID 1 to nginx so the container's lifecycle tracks nginx.
+    #
+    # Paths are written out in full on purpose. Shell variables break the
+    # CodePipeline EKS deploy action: it treats every dollar-sign token in a
+    # manifest as a placeholder it is expected to substitute, and fails the
+    # deploy when no matching action variable is configured. Do not add any
+    # dollar-sign references to this file - not even inside comments.
     set -eu
 
-    ASSETS=/etc/pwsdemo                  # ConfigMap mount (read-only)
-    AGENT_DIR=/usr/src/app/k8s           # shared emptyDir written by secrets-agent
-    DOCROOT=/usr/share/nginx/html
-
     echo "[demo] publishing page"
-    cp "$ASSETS/index.html" "$DOCROOT/index.html"
+    cp /etc/pwsdemo/index.html /usr/share/nginx/html/index.html
 
-    echo "[demo] publishing secret from $AGENT_DIR/k8s/k8s"
-    mkdir -p "$DOCROOT/k8s/k8s"
-    if [ -s "$AGENT_DIR/k8s/k8s" ]; then
-        cp "$AGENT_DIR/k8s/k8s" "$DOCROOT/k8s/k8s/k8s.txt"
-        echo "[demo] ok — $(wc -c < "$DOCROOT/k8s/k8s/k8s.txt") bytes"
+    echo "[demo] publishing secret from /usr/src/app/k8s/k8s/k8s"
+    mkdir -p /usr/share/nginx/html/k8s/k8s
+
+    if [ -s /usr/src/app/k8s/k8s/k8s ]; then
+        cp /usr/src/app/k8s/k8s/k8s /usr/share/nginx/html/k8s/k8s/k8s.txt
+        echo "[demo] ok - secret published"
     else
-        echo "[demo] WARN: $AGENT_DIR/k8s/k8s missing or empty; page will show 'Unavailable'" >&2
-        echo "[demo] contents of $AGENT_DIR:" >&2
-        ls -lR "$AGENT_DIR" >&2 || true
+        echo "[demo] WARN: secret file missing or empty; page will show 'Unavailable'" >&2
+        echo "[demo] contents of /usr/src/app/k8s:" >&2
+        ls -lR /usr/src/app/k8s >&2 || true
     fi
 
     exec nginx -g 'daemon off;'
+
   index.html: |
     <!DOCTYPE html>
     <html lang="en">
