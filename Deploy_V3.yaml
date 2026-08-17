@@ -1,4 +1,12 @@
-
+---
+# The Password Safe API key must NOT live in this file. Create it once:
+#
+#   kubectl -n default create secret generic pws-api \
+#     --from-literal=api-key='<NEW-KEY>;runas=NH-k8Example-local;'
+#
+# No namespace is declared on these objects on purpose - the pipeline passes
+# -n explicitly, and a hardcoded namespace that disagrees with it makes
+# kubectl reject the apply.
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,12 +14,18 @@ metadata:
   labels:
     app: passwordsafe-integrationv3
 spec:
-  type: NodePort     # switch to LoadBalancer/NodePort to reach it from outside
+  # NodePort costs nothing (no ELB). Reach it with:
+  #   kubectl port-forward svc/passwordsafe-integrationv3 8080:80
+  # Do NOT open 31220 on the node security group - this page renders the
+  # retrieved secret in the browser, so a public NodePort publishes a
+  # Password Safe credential to the internet.
+  type: NodePort
   selector:
     app: passwordsafe-integrationv3
   ports:
     - name: http
       port: 80
+      targetPort: http
       nodePort: 31220
 ---
 apiVersion: apps/v1
@@ -29,10 +43,9 @@ spec:
     metadata:
       labels:
         app: passwordsafe-integrationv3
-      annotations:
-        # Roll the pods whenever the ConfigMap changes (update this by hand,
-        # or let kustomize/helm hash it for you).
-        demo/assets-revision: "2"
+      # The demo/assets-revision annotation is gone. The pipeline now runs
+      # `kubectl rollout restart` after every apply, so pods pick up ConfigMap
+      # changes without anyone remembering to bump a counter by hand.
     spec:
       volumes:
         - name: demo-assets
@@ -45,6 +58,10 @@ spec:
 
       initContainers:
         - name: secrets-agent
+          # :latest + Always pulls Docker Hub on every pod start. EKS nodes
+          # share a NAT egress IP, so anonymous pull rate limits can cause
+          # ImagePullBackOff. Mirror to ECR and pin a digest for anything
+          # beyond a demo.
           image: beyondtrust/secrets-agent:latest
           imagePullPolicy: Always
           volumeMounts:
@@ -85,6 +102,9 @@ spec:
               mountPath: /etc/pwsdemo
               readOnly: true
           readinessProbe:
+            # Only goes green once secrets-agent actually retrieved the secret,
+            # so a Password Safe auth failure fails the pipeline rather than
+            # shipping a broken page.
             httpGet: { path: /k8s/k8s/k8s.txt, port: http }
             initialDelaySeconds: 2
             periodSeconds: 5
